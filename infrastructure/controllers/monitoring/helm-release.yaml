@@ -1,0 +1,97 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: monitoring
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      version: "62.x"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      interval: 12h
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    # Grafana configuration
+    grafana:
+      enabled: true
+      adminPassword: admin
+      defaultDashboardsEnabled: true
+      defaultDashboardsTimezone: utc
+      service:
+        type: ClusterIP
+      sidecar:
+        dashboards:
+          enabled: true
+          searchNamespace: ALL
+          label: grafana_dashboard
+          labelValue: "1"
+          folderAnnotation: grafana_folder
+          provider:
+            foldersFromFilesStructure: true
+
+    # Prometheus configuration
+    prometheus:
+      prometheusSpec:
+        retention: 7d
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 10Gi
+        serviceMonitorSelectorNilUsesHelmValues: false
+        podMonitorSelectorNilUsesHelmValues: false
+        ruleSelectorNilUsesHelmValues: false
+        serviceMonitorSelector: {}
+        podMonitorSelector: {}
+        ruleSelector: {}
+
+    # Alertmanager configuration
+    alertmanager:
+      enabled: true
+      alertmanagerSpec:
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+    # Disable components not needed for local dev
+    kubeEtcd:
+      enabled: false
+    kubeControllerManager:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeProxy:
+      enabled: false
+
+    # Node exporter for host metrics
+    nodeExporter:
+      enabled: true
+
+    # Kube-state-metrics for Kubernetes object metrics
+    kubeStateMetrics:
+      enabled: true

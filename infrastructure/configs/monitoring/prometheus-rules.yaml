@@ -1,0 +1,199 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: voize-application-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # ML API Alerts
+    - name: ml-api.rules
+      rules:
+        - alert: MLAPIHighErrorRate
+          expr: |
+            (
+              sum(rate(ml_api_requests_total{status=~"5.."}[5m])) by (namespace, pod)
+              /
+              sum(rate(ml_api_requests_total[5m])) by (namespace, pod)
+            ) > 0.05
+          for: 2m
+          labels:
+            severity: critical
+            service: ml-api
+          annotations:
+            summary: "ML API high error rate"
+            description: "ML API pod {{ $labels.pod }} has error rate > 5% (current: {{ $value | humanizePercentage }})"
+
+        - alert: MLAPIHighLatency
+          expr: |
+            histogram_quantile(0.95, 
+              sum(rate(ml_api_request_duration_seconds_bucket[5m])) by (le, namespace, pod)
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            service: ml-api
+          annotations:
+            summary: "ML API high latency"
+            description: "ML API pod {{ $labels.pod }} p95 latency > 2s (current: {{ $value | humanizeDuration }})"
+
+        - alert: MLAPIHighMemoryUsage
+          expr: |
+            ml_api_memory_bytes / 1024 / 1024 > 200
+          for: 5m
+          labels:
+            severity: warning
+            service: ml-api
+          annotations:
+            summary: "ML API high memory usage"
+            description: "ML API pod {{ $labels.pod }} memory usage > 200MB (current: {{ $value | humanize }}MB)"
+
+        - alert: MLAPIDown
+          expr: |
+            up{job="ml-api"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: ml-api
+          annotations:
+            summary: "ML API is down"
+            description: "ML API instance {{ $labels.instance }} is not responding"
+
+        - alert: MLAPINoPredictions
+          expr: |
+            sum(rate(ml_api_predictions_total[10m])) == 0
+          for: 10m
+          labels:
+            severity: warning
+            service: ml-api
+          annotations:
+            summary: "ML API not making predictions"
+            description: "No predictions have been made in the last 10 minutes"
+
+    # Backend API Alerts
+    - name: backend-api.rules
+      rules:
+        - alert: BackendAPIHighErrorRate
+          expr: |
+            (
+              sum(rate(backend_api_requests_total{status=~"5.."}[5m])) by (namespace, pod)
+              /
+              sum(rate(backend_api_requests_total[5m])) by (namespace, pod)
+            ) > 0.05
+          for: 2m
+          labels:
+            severity: critical
+            service: backend-api
+          annotations:
+            summary: "Backend API high error rate"
+            description: "Backend API pod {{ $labels.pod }} has error rate > 5% (current: {{ $value | humanizePercentage }})"
+
+        - alert: BackendAPIHighLatency
+          expr: |
+            histogram_quantile(0.95, 
+              sum(rate(backend_api_request_duration_seconds_bucket[5m])) by (le, namespace, pod)
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            service: backend-api
+          annotations:
+            summary: "Backend API high latency"
+            description: "Backend API pod {{ $labels.pod }} p95 latency > 1s (current: {{ $value | humanizeDuration }})"
+
+        - alert: BackendAPIDown
+          expr: |
+            up{job="backend-api"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: backend-api
+          annotations:
+            summary: "Backend API is down"
+            description: "Backend API instance {{ $labels.instance }} is not responding"
+
+        - alert: BackendAPIHighDBConnections
+          expr: |
+            backend_api_db_connections_active > 8
+          for: 5m
+          labels:
+            severity: warning
+            service: backend-api
+          annotations:
+            summary: "Backend API high DB connections"
+            description: "Backend API pod {{ $labels.pod }} has {{ $value }} active DB connections"
+
+        - alert: BackendAPIDBQueryErrors
+          expr: |
+            sum(rate(backend_api_db_queries_total{status="error"}[5m])) by (pod) > 0.1
+          for: 2m
+          labels:
+            severity: critical
+            service: backend-api
+          annotations:
+            summary: "Backend API database query errors"
+            description: "Backend API pod {{ $labels.pod }} is experiencing DB query errors"
+
+    # Infrastructure Alerts
+    - name: infrastructure.rules
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace=~"ml-api|backend-api|postgres"}[1h]) > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod is crash looping"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last hour"
+
+        - alert: PodNotReady
+          expr: |
+            kube_pod_status_ready{condition="true", namespace=~"ml-api|backend-api|postgres"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod not ready"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been not ready for 5 minutes"
+
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            kube_deployment_spec_replicas{namespace=~"ml-api|backend-api"}
+            !=
+            kube_deployment_status_replicas_available{namespace=~"ml-api|backend-api"}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment replicas mismatch"
+            description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has {{ $value }} available replicas, expected {{ $labels.spec_replicas }}"
+
+        - alert: HighPodMemoryUsage
+          expr: |
+            (
+              container_memory_working_set_bytes{namespace=~"ml-api|backend-api|postgres", container!=""}
+              /
+              container_spec_memory_limit_bytes{namespace=~"ml-api|backend-api|postgres", container!=""}
+            ) > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High pod memory usage"
+            description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is using > 90% of memory limit"
+
+        - alert: HighPodCPUUsage
+          expr: |
+            (
+              sum(rate(container_cpu_usage_seconds_total{namespace=~"ml-api|backend-api|postgres", container!=""}[5m])) by (namespace, pod, container)
+              /
+              sum(container_spec_cpu_quota{namespace=~"ml-api|backend-api|postgres", container!=""}/container_spec_cpu_period{namespace=~"ml-api|backend-api|postgres", container!=""}) by (namespace, pod, container)
+            ) > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High pod CPU usage"
+            description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is using > 90% of CPU limit"
