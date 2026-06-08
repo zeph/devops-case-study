@@ -103,6 +103,16 @@ flux bootstrap github \
 # --- Wait for workloads ---
 echo ""
 echo "--- Waiting for workloads to be deployed ---"
+
+# Wait for namespaces to be created by Flux (they may not exist immediately after bootstrap)
+echo "Waiting for namespaces to be created..."
+for ns in postgres ml-api backend-api; do
+  until kubectl get namespace "$ns" &>/dev/null; do
+    echo "  Waiting for namespace '$ns'..."
+    sleep 2
+  done
+done
+
 kubectl wait --for=condition=Available deployment/postgres -n postgres --timeout=180s
 kubectl wait --for=condition=Available deployment/ml-api -n ml-api --timeout=180s
 kubectl wait --for=condition=Available deployment/backend-api -n backend-api --timeout=180s
