@@ -37,6 +37,35 @@ This document describes the monitoring and observability stack deployed for the 
 - Receives alerts from Prometheus
 - Can be configured for Slack, PagerDuty, email, etc. (not configured in this setup)
 
+## Monitoring Strategy Rationale
+
+### Why These Metrics?
+
+The monitoring approach follows the **RED method** (Rate, Errors, Duration) for request-driven services:
+
+| Principle | Metrics | Why |
+|-----------|---------|-----|
+| **Rate** | `*_requests_total` | Understand traffic patterns, detect anomalies |
+| **Errors** | `*_requests_total{status=~"5.."}` | Calculate error rates for SLI/SLO tracking |
+| **Duration** | `*_request_duration_seconds` | Measure user-facing latency via percentiles |
+
+**Histograms over Summaries**: We use histograms for latency because they're aggregatable across replicas and allow flexible percentile calculation at query time.
+
+### ML-Specific Considerations
+
+- **`ml_api_predictions_total`**: A business metric that directly measures value delivered. Useful for capacity planning and detecting inference failures even when the service appears "healthy".
+- **`ml_api_memory_bytes`**: ML models are memory-hungry. Tracking this prevents OOMKills and helps right-size resource limits.
+
+### Database Health
+
+- **`backend_api_db_connections_active`**: Connection pool exhaustion is a common failure mode. Alert before hitting the limit.
+- **`backend_api_db_queries_total`**: Database issues often manifest as query failures before affecting HTTP responses.
+
+### Infrastructure Metrics
+
+- **Resource usage relative to limits**: We monitor CPU/memory as a percentage of limits, not absolute values. "80% of memory limit" is more actionable than "500MB used".
+- **Pod restarts**: Crash loops indicate app instability or resource issues that need immediate attention.
+
 ## What We Monitor
 
 ### ML API Metrics
@@ -92,6 +121,22 @@ This document describes the monitoring and observability stack deployed for the 
 - **Database**: Active connections per pod, query rate by status
 
 ## Alerting Rules
+
+### Alert Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|----------|
+| **`for` durations** | 1-2m critical, 5-10m warning | Fast response for critical issues; avoid flapping for warnings |
+| **Latency percentile** | p95 (not p99) | p99 is noisier and harder to act on; p95 balances signal vs noise |
+| **Error threshold** | 5% | Reasonable SLO threshold; catches real issues without alert fatigue |
+| **Resource thresholds** | 90% of limits | Gives buffer before OOMKill/throttling occurs |
+
+### The "No Predictions" Alert
+
+This alert (`MLAPINoPredictions`) catches a subtle failure mode: the service is healthy (responding to health checks) but not processing work. This can happen when:
+- Upstream queue is stuck
+- Model loading failed silently
+- Request routing is broken
 
 ### Critical Alerts (Immediate Action Required)
 
@@ -157,6 +202,7 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9
 5. **PostgreSQL monitoring**: Add postgres-exporter for database metrics
 6. **Runbooks**: Link alerts to runbook documentation
 7. **Recording rules**: Pre-compute expensive queries for dashboard performance
+8. **Error budget burn rate alerts**: More sophisticated SLO-based alerting that considers error budget consumption rate rather than instantaneous thresholds
 
 ## GitOps Structure
 
@@ -184,3 +230,22 @@ The monitoring stack is deployed in two phases:
 2. **Configs**: Deploys ServiceMonitors, PrometheusRules, and Grafana dashboards
 
 This separation ensures CRDs are available before custom resources are created.
+
+## Interview Discussion Points
+
+### Key Design Decisions
+
+1. **15s scrape interval**: Balance between metric resolution and storage cost. For ML inference, 15s catches most issues; could increase to 30s if storage becomes a concern.
+
+2. **7-day retention**: Sufficient for incident investigation and short-term trends. For long-term capacity planning, would add Thanos or Cortex.
+
+3. **Relative vs absolute thresholds**: Resource alerts use percentage of limits (e.g., >90% memory) rather than absolute values. This makes alerts portable across different resource configurations.
+
+4. **Business metrics alongside technical metrics**: `ml_api_predictions_total` measures actual value delivery, not just service health.
+
+### What's Intentionally Not Included
+
+- **Log aggregation**: Marked as optional in requirements; would add Loki for production
+- **Distributed tracing**: Would add for debugging cross-service request flows
+- **Alert routing**: Alertmanager is deployed but not configured for external notifications
+- **SLO burn rate alerts**: Current alerts are threshold-based; production would use error budget consumption
